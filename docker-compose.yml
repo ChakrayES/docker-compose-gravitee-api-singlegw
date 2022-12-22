@@ -1,0 +1,179 @@
+version: '3.5'
+
+networks:
+  sandbox-api-storage-net:
+  sandbox-api-frontend-net:
+      ipam:
+        driver: default
+        config:
+          - subnet: 172.10.0.0/16
+
+volumes:
+  portainer: {}
+  datamongo: {}
+  dataelasticsearch: {}
+
+services:
+  traefik:
+    image: traefik:v2.2
+    container_name: sandbox-traefik
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - "--log.level=DEBUG"
+      - "--accessLog=true"
+      - "--accessLog.filePath=/logs/access.log"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker.swarmMode=false"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.http.address=:80"
+      - "--providers.file.directory=/configuration/"
+      - "--providers.file.watch=true"
+      - "--providers.docker.watch=true"
+      - "--metrics.prometheus=false"
+    networks:
+      sandbox-api-frontend-net:
+        ipv4_address: 172.10.1.1
+
+  portainer:
+    image: portainer/portainer:1.23.2
+    container_name: sandbox-portainer
+    hostname: sandbox-portainer
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.demo.chakray.internal`)"
+      - "traefik.http.routers.portainer.entrypoints=http"
+      - "traefik.http.routers.portainer.tls=false"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer:/data
+    networks:
+      - sandbox-api-frontend-net
+
+  mongodb:
+    image: mongo:3.6
+    container_name: sandbox-mongodb
+    volumes:
+      - datamongo:/data/db
+    networks:
+      - sandbox-api-storage-net
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.7.0
+    container_name: sandbox-elasticsearch
+    volumes:
+      - dataelasticsearch:/usr/share/elasticsearch/data
+    environment:
+      - http.host=0.0.0.0
+      - transport.host=0.0.0.0
+      - xpack.security.enabled=false
+      - xpack.monitoring.enabled=false
+      - cluster.name=elasticsearch
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile: 65536
+    networks:
+      - sandbox-api-storage-net
+
+  gateway:
+    image: graviteeio/apim-gateway:3.18
+    container_name: sandbox-gateway
+    depends_on:
+      - mongodb
+      - elasticsearch
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_ratelimit_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_reporters_elasticsearch_endpoints_0=http://elasticsearch:9200
+    extra_hosts:
+      - "api.demo.chakray.internal:172.10.1.1"
+      - "mgt-api.demo.chakray.internal:172.10.1.1"
+      - "mgt-ui.demo.chakray.internal:172.10.1.1"
+      - "portal-ui.demo.chakray.internal:172.10.1.1"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`api.demo.chakray.internal`)"
+      - "traefik.http.routers.api.entrypoints=http"
+      - "traefik.http.routers.api.tls=false"
+      - "traefik.http.services.api.loadbalancer.server.port=8082"  
+    networks:
+      - sandbox-api-frontend-net
+      - sandbox-api-storage-net
+      
+  management_api:
+    image: graviteeio/apim-management-api:3.18
+    container_name: sandbox-management-api
+    depends_on:
+      - mongodb
+      - elasticsearch
+    ports:
+      - "8083:8083"
+    environment:
+      - gravitee_management_mongodb_uri=mongodb://mongodb:27017/gravitee?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000
+      - gravitee_analytics_elasticsearch_endpoints_0=http://elasticsearch:9200
+    extra_hosts:
+      - "api.demo.chakray.internal:172.10.1.1"
+      - "mgt-api.demo.chakray.internal:172.10.1.1"
+      - "mgt-ui.demo.chakray.internal:172.10.1.1"
+      - "portal-ui.demo.chakray.internal:172.10.1.1"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mgt-api.rule=Host(`mgt-api.demo.chakray.internal`)"
+      - "traefik.http.routers.mgt-api.entrypoints=http"
+      - "traefik.http.routers.mgt-api.tls=false"
+      - "traefik.http.services.mgt-api.loadbalancer.server.port=8083" 
+    networks:
+      - sandbox-api-frontend-net
+      - sandbox-api-storage-net
+
+  management_ui:
+    image: graviteeio/apim-management-ui:3.18
+    container_name: sandbox-management-ui
+    depends_on:
+      - management_api
+    environment:
+      - MGMT_API_URL=http://localhost:8083/management/organizations/DEFAULT/environments/DEFAULT/
+    extra_hosts:
+      - "api.demo.chakray.internal:172.10.1.1"
+      - "mgt-api.demo.chakray.internal:172.10.1.1"
+      - "mgt-ui.demo.chakray.internal:172.10.1.1"
+      - "portal-ui.demo.chakray.internal:172.10.1.1"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mgt-ui.rule=Host(`mgt-ui.demo.chakray.internal`)"
+      - "traefik.http.routers.mgt-ui.entrypoints=http"
+      - "traefik.http.routers.mgt-ui.tls=false"
+      - "traefik.http.services.mgt-ui.loadbalancer.server.port=8080" 
+    networks:
+      - sandbox-api-frontend-net
+
+  portal_ui:
+    image: graviteeio/apim-portal-ui:3.18
+    container_name: sandbox-portal-ui
+    depends_on:
+      - management_api
+    environment:
+      - PORTAL_API_URL=http://localhost:8083/portal/environments/DEFAULT
+    extra_hosts:
+      - "api.demo.chakray.internal:172.10.1.1"
+      - "mgt-api.demo.chakray.internal:172.10.1.1"
+      - "mgt-ui.demo.chakray.internal:172.10.1.1"
+      - "portal-ui.demo.chakray.internal:172.10.1.1"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portal-ui.rule=Host(`portal-ui.demo.chakray.internal`)"
+      - "traefik.http.routers.portal-ui.entrypoints=http"
+      - "traefik.http.routers.portal-ui.tls=false"
+      - "traefik.http.services.portal-ui.loadbalancer.server.port=8080" 
+    networks:
+      - sandbox-api-frontend-net
