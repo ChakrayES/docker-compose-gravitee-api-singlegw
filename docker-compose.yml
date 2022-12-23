@@ -1,6 +1,8 @@
 version: '3.5'
 
 networks:
+  docker-compose-gravitee-am-singlegw_sandbox-am-frontend-net:
+    external: true 
   sandbox-api-storage-net:
   sandbox-api-frontend-net:
       ipam:
@@ -109,6 +111,7 @@ services:
     networks:
       - sandbox-api-frontend-net
       - sandbox-api-storage-net
+      - docker-compose-gravitee-am-singlegw_sandbox-am-frontend-net
       
   management_api:
     image: graviteeio/apim-management-api:3.18
